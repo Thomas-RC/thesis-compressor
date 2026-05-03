@@ -11,6 +11,7 @@ repository = "https://github.com/Thomas-RC/thesis-compressor"
 anyhow = "1"
 candle-core = "0.10"
 candle-nn = "0.10"
+clap = { version = "4.6", features = ["derive"] }
 rand = "0.10"
 
 [features]
