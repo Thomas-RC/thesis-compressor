@@ -117,6 +117,7 @@ fn run_one(
     let best_ckpt = format!("{}/{tag}_best.safetensors", args.detail_dir);
 
     let train_cfg = TrainConfig {
+        arch: thesis_compressor::Arch::Baseline,
         n_steps: args.steps,
         batch_size: args.batch_size,
         lr_max: args.lr_max,

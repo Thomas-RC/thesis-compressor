@@ -7,12 +7,29 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::time::Instant;
 
+use crate::Arch;
 use crate::config::Config;
 use crate::data::BatchSampler;
 use crate::model::Model;
+use crate::model_llama::LlamaModel;
+
+enum AnyModel {
+    Baseline(Model),
+    Llama(LlamaModel),
+}
+
+impl AnyModel {
+    fn forward(&self, x: &candle_core::Tensor) -> Result<candle_core::Tensor> {
+        match self {
+            AnyModel::Baseline(m) => m.forward(x),
+            AnyModel::Llama(m) => m.forward(x),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct TrainConfig {
+    pub arch: Arch,
     pub n_steps: usize,
     pub batch_size: usize,
     pub lr_max: f64,
@@ -32,6 +49,7 @@ pub struct TrainConfig {
 impl Default for TrainConfig {
     fn default() -> Self {
         Self {
+            arch: Arch::Baseline,
             n_steps: 500,
             batch_size: 32,
             lr_max: 3e-4,
@@ -85,10 +103,17 @@ pub fn train(
 ) -> Result<TrainResult> {
     let varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, device);
-    let model = Model::new(model_cfg.clone(), vb)?;
-    let n_params = model_cfg.param_count_estimate();
+    let model = match train_cfg.arch {
+        Arch::Baseline => AnyModel::Baseline(Model::new(model_cfg.clone(), vb)?),
+        Arch::Llama => AnyModel::Llama(LlamaModel::new(model_cfg.clone(), vb)?),
+    };
+    let n_params = match train_cfg.arch {
+        Arch::Baseline => model_cfg.param_count_estimate(),
+        Arch::Llama => LlamaModel::param_count_estimate(&model_cfg),
+    };
     println!(
-        "[+] model: ~{n_params} parametrów ({:.2} M), device={device:?}",
+        "[+] arch={} model: ~{n_params} parametrów ({:.2} M), device={device:?}",
+        train_cfg.arch.name(),
         n_params as f64 / 1.0e6
     );
 
@@ -201,7 +226,7 @@ pub fn train(
 }
 
 fn eval_model(
-    model: &Model,
+    model: &AnyModel,
     sampler: &mut BatchSampler<'_>,
     n_batches: usize,
     device: &Device,

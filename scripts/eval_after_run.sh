@@ -9,6 +9,7 @@
 #   EVAL_BATCH=N — eval batch size (default 8, safe for all presets on 16 GB).
 #                  For 'large' you can set EVAL_BATCH=16 to halve eval wall time.
 #                  'xlarge' MUST stay at 8 (b=16 OOMs on 16 GB).
+#   ARCH=baseline|llama — model architecture matching the checkpoint (default baseline).
 #
 # Examples:
 #   scripts/eval_after_run.sh checkpoints/large_40k_b16_best.safetensors large
@@ -23,6 +24,7 @@ INCLUDE_TRAIN="no"
 [[ "${3:-}" == "--include-train" ]] && INCLUDE_TRAIN="yes"
 
 EVAL_BATCH="${EVAL_BATCH:-8}"
+ARCH="${ARCH:-baseline}"
 EVAL_BIN="./target/release/eval"
 CSV="results/eval_summary.csv"
 
@@ -57,6 +59,7 @@ for split in "${SPLITS[@]}"; do
     "$EVAL_BIN" \
         --checkpoint "$CKPT" \
         --preset "$PRESET" \
+        --arch "$ARCH" \
         --batch-size "$EVAL_BATCH" \
         --split "$split" \
         --csv "$CSV"

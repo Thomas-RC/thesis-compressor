@@ -3,15 +3,46 @@ use candle_core::{DType, Device, Tensor};
 use candle_nn::{VarBuilder, VarMap};
 use clap::{Parser, ValueEnum};
 use std::time::Instant;
+use thesis_compressor::Arch;
 use thesis_compressor::config::Config;
 use thesis_compressor::data::{Splits, load_enwik8};
 use thesis_compressor::model::Model;
+use thesis_compressor::model_llama::LlamaModel;
+
+enum AnyModel {
+    Baseline(Model),
+    Llama(LlamaModel),
+}
+
+impl AnyModel {
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        match self {
+            AnyModel::Baseline(m) => m.forward(x),
+            AnyModel::Llama(m) => m.forward(x),
+        }
+    }
+}
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum DeviceArg {
     Auto,
     Cpu,
     Cuda,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum ArchArg {
+    Baseline,
+    Llama,
+}
+
+impl From<ArchArg> for Arch {
+    fn from(a: ArchArg) -> Self {
+        match a {
+            ArchArg::Baseline => Arch::Baseline,
+            ArchArg::Llama => Arch::Llama,
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -61,6 +92,10 @@ struct Args {
     #[arg(long, default_value = "large")]
     preset: String,
 
+    /// Model architecture matching the checkpoint
+    #[arg(long, value_enum, default_value_t = ArchArg::Baseline)]
+    arch: ArchArg,
+
     /// Mini-batch size during evaluation (limited by VRAM, not by accuracy)
     #[arg(long, default_value_t = 16)]
     batch_size: usize,
@@ -98,7 +133,11 @@ fn main() -> Result<()> {
 
     let mut varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
-    let model = Model::new(cfg.clone(), vb)?;
+    let arch: Arch = args.arch.into();
+    let model = match arch {
+        Arch::Baseline => AnyModel::Baseline(Model::new(cfg.clone(), vb)?),
+        Arch::Llama => AnyModel::Llama(LlamaModel::new(cfg.clone(), vb)?),
+    };
     varmap.load(&args.checkpoint)?;
 
     let splits = load_enwik8(&args.data)?;
@@ -113,8 +152,12 @@ fn main() -> Result<()> {
 
     println!("[+] checkpoint: {}", args.checkpoint);
     println!(
-        "[+] preset='{}' seq_len={} batch={} device={:?}",
-        args.preset, cfg.seq_len, args.batch_size, device
+        "[+] arch={} preset='{}' seq_len={} batch={} device={:?}",
+        arch.name(),
+        args.preset,
+        cfg.seq_len,
+        args.batch_size,
+        device
     );
     println!(
         "[+] split={} bytes={} windows={} predicted={} coverage={:.4}",

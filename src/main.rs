@@ -1,6 +1,7 @@
 use anyhow::Result;
 use candle_core::Device;
 use clap::{Parser, ValueEnum};
+use thesis_compressor::Arch;
 use thesis_compressor::config::Config;
 use thesis_compressor::data::load_enwik8;
 use thesis_compressor::train::{TrainConfig, train};
@@ -31,6 +32,21 @@ impl Preset {
     }
 }
 
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum ArchArg {
+    Baseline,
+    Llama,
+}
+
+impl From<ArchArg> for Arch {
+    fn from(a: ArchArg) -> Self {
+        match a {
+            ArchArg::Baseline => Arch::Baseline,
+            ArchArg::Llama => Arch::Llama,
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "thesis-compressor", version, about = "Byte-level Transformer for lossless text compression")]
 struct Args {
@@ -41,6 +57,10 @@ struct Args {
     /// Model size preset
     #[arg(long, value_enum, default_value_t = Preset::Medium)]
     preset: Preset,
+
+    /// Model architecture: baseline (LayerNorm + learned pos + GELU MLP) or llama (RMSNorm + RoPE + SwiGLU)
+    #[arg(long, value_enum, default_value_t = ArchArg::Baseline)]
+    arch: ArchArg,
 
     /// Compute device (auto = try CUDA, fallback CPU)
     #[arg(long, value_enum, default_value_t = DeviceArg::Auto)]
@@ -157,6 +177,7 @@ fn main() -> Result<()> {
     let device = pick_device(args.device);
     let model_cfg = Config::from_preset(args.preset.as_str())?;
     let train_cfg = TrainConfig {
+        arch: args.arch.into(),
         n_steps: args.steps,
         batch_size: args.batch_size,
         lr_max: args.lr_max,
