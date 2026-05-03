@@ -27,7 +27,9 @@ if [[ ! -x "$EVAL_BIN" ]]; then
 fi
 
 echo "[+] waiting for any running thesis-compressor training to finish..."
-while pgrep -x thesis-compressor > /dev/null; do
+# -f matches full command line (the binary name 'thesis-compressor' exceeds
+# pgrep's default 15-char comm field, so -x silently misses it).
+while pgrep -f 'target/release/thesis-compressor' > /dev/null; do
     sleep 30
 done
 echo "[+] training process not running"
