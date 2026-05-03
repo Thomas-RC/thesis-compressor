@@ -1,0 +1,7 @@
+/target
+/data/*
+!/data/.gitkeep
+/checkpoints
+/results
+*.swp
+.DS_Store
