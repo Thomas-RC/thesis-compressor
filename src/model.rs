@@ -124,10 +124,12 @@ pub struct Model {
     head: Linear,
     mask: Tensor,
     cfg: Config,
+    device: Device,
 }
 
 impl Model {
     pub fn new(cfg: Config, vb: VarBuilder) -> Result<Self> {
+        let device = vb.device().clone();
         let tok_emb = candle_nn::embedding(cfg.vocab_size, cfg.d_model, vb.pp("tok_emb"))?;
         let pos_emb = candle_nn::embedding(cfg.seq_len, cfg.d_model, vb.pp("pos_emb"))?;
         let mut blocks = Vec::with_capacity(cfg.n_layers);
@@ -136,7 +138,7 @@ impl Model {
         }
         let ln_f = candle_nn::layer_norm(cfg.d_model, 1e-5, vb.pp("ln_f"))?;
         let head = candle_nn::linear(cfg.d_model, cfg.vocab_size, vb.pp("head"))?;
-        let mask = build_causal_mask(cfg.seq_len, vb.device())?;
+        let mask = build_causal_mask(cfg.seq_len, &device)?;
         Ok(Self {
             tok_emb,
             pos_emb,
@@ -145,6 +147,7 @@ impl Model {
             head,
             mask,
             cfg,
+            device,
         })
     }
 
@@ -155,7 +158,11 @@ impl Model {
             "input length {t} > seq_len {}",
             self.cfg.seq_len
         );
-        let positions = Tensor::arange(0u32, t as u32, x.device())?;
+        anyhow::ensure!(
+            x.device().same_device(&self.device),
+            "input device differs from model device"
+        );
+        let positions = Tensor::arange(0u32, t as u32, &self.device)?;
         let pos = self.pos_emb.forward(&positions)?.unsqueeze(0)?;
         let tok = self.tok_emb.forward(x)?;
         let mut h = tok.broadcast_add(&pos)?;
@@ -170,9 +177,7 @@ impl Model {
         &self.cfg
     }
 
-    #[allow(dead_code)]
-    pub fn batch_size_hint(_x: &Tensor) -> usize {
-        // placeholder for future batched inference helpers
-        1
+    pub fn device(&self) -> &Device {
+        &self.device
     }
 }

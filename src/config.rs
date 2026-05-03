@@ -9,7 +9,7 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn mvp() -> Self {
+    pub fn small() -> Self {
         Self {
             vocab_size: 256,
             seq_len: 256,
@@ -17,6 +17,37 @@ impl Config {
             n_layers: 2,
             n_heads: 4,
             ffn_mult: 4,
+        }
+    }
+
+    pub fn medium() -> Self {
+        Self {
+            vocab_size: 256,
+            seq_len: 512,
+            d_model: 256,
+            n_layers: 4,
+            n_heads: 4,
+            ffn_mult: 4,
+        }
+    }
+
+    pub fn large() -> Self {
+        Self {
+            vocab_size: 256,
+            seq_len: 1024,
+            d_model: 512,
+            n_layers: 6,
+            n_heads: 8,
+            ffn_mult: 4,
+        }
+    }
+
+    pub fn from_preset(name: &str) -> anyhow::Result<Self> {
+        match name {
+            "small" => Ok(Self::small()),
+            "medium" => Ok(Self::medium()),
+            "large" => Ok(Self::large()),
+            other => anyhow::bail!("nieznany preset: {other} (oczekiwano small|medium|large)"),
         }
     }
 

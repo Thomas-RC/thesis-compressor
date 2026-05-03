@@ -15,14 +15,18 @@ use crate::model::Model;
 pub struct TrainConfig {
     pub n_steps: usize,
     pub batch_size: usize,
-    pub lr: f64,
+    pub lr_max: f64,
+    pub lr_min: f64,
+    pub warmup_steps: usize,
+    pub decay_start_frac: f64,
     pub weight_decay: f64,
     pub eval_every: usize,
     pub eval_batches: usize,
     pub log_every: usize,
     pub seed: u64,
     pub csv_path: String,
-    pub checkpoint_path: String,
+    pub last_checkpoint_path: String,
+    pub best_checkpoint_path: String,
 }
 
 impl Default for TrainConfig {
@@ -30,15 +34,37 @@ impl Default for TrainConfig {
         Self {
             n_steps: 500,
             batch_size: 32,
-            lr: 3e-4,
+            lr_max: 3e-4,
+            lr_min: 3e-5,
+            warmup_steps: 25,
+            decay_start_frac: 0.8,
             weight_decay: 0.01,
             eval_every: 50,
             eval_batches: 10,
             log_every: 10,
             seed: 42,
             csv_path: "results/training.csv".into(),
-            checkpoint_path: "checkpoints/model.safetensors".into(),
+            last_checkpoint_path: "checkpoints/model_last.safetensors".into(),
+            best_checkpoint_path: "checkpoints/model_best.safetensors".into(),
         }
+    }
+}
+
+fn lr_at_step(step: usize, cfg: &TrainConfig) -> f64 {
+    let total = cfg.n_steps;
+    let warmup = cfg.warmup_steps;
+    let decay_start = ((total as f64) * cfg.decay_start_frac) as usize;
+    if step < warmup {
+        let frac = (step as f64 + 1.0) / (warmup.max(1) as f64);
+        cfg.lr_min + (cfg.lr_max - cfg.lr_min) * frac
+    } else if step < decay_start {
+        cfg.lr_max
+    } else if step < total {
+        let span = (total - decay_start).max(1) as f64;
+        let progress = (step - decay_start) as f64 / span;
+        cfg.lr_max + (cfg.lr_min - cfg.lr_max) * progress
+    } else {
+        cfg.lr_min
     }
 }
 
@@ -52,14 +78,14 @@ pub fn train(
     let varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, device);
     let model = Model::new(model_cfg.clone(), vb)?;
+    let n_params = model_cfg.param_count_estimate();
     println!(
-        "[+] model zainicjalizowany (~{} parametrów, {:.2} M)",
-        model_cfg.param_count_estimate(),
-        model_cfg.param_count_estimate() as f64 / 1.0e6
+        "[+] model: ~{n_params} parametrów ({:.2} M), device={device:?}",
+        n_params as f64 / 1.0e6
     );
 
     let opt_params = ParamsAdamW {
-        lr: train_cfg.lr,
+        lr: train_cfg.lr_max,
         weight_decay: train_cfg.weight_decay,
         ..Default::default()
     };
@@ -77,16 +103,23 @@ pub fn train(
     if let Some(parent) = Path::new(&train_cfg.csv_path).parent() {
         create_dir_all(parent)?;
     }
-    if let Some(parent) = Path::new(&train_cfg.checkpoint_path).parent() {
+    if let Some(parent) = Path::new(&train_cfg.last_checkpoint_path).parent() {
+        create_dir_all(parent)?;
+    }
+    if let Some(parent) = Path::new(&train_cfg.best_checkpoint_path).parent() {
         create_dir_all(parent)?;
     }
     let mut csv = BufWriter::new(File::create(&train_cfg.csv_path)?);
-    writeln!(csv, "step,phase,loss_nat,bpc,wall_s")?;
+    writeln!(csv, "step,phase,loss_nat,bpc,lr,wall_s")?;
 
     let t0 = Instant::now();
     let ln2 = 2f32.ln();
+    let mut best_val_bpc = f32::INFINITY;
 
     for step in 1..=train_cfg.n_steps {
+        let lr = lr_at_step(step - 1, &train_cfg);
+        opt.set_learning_rate(lr);
+
         let (input, target) = train_sampler.sample(device)?;
         let logits = model.forward(&input)?;
         let (b, t, v) = logits.dims3()?;
@@ -101,21 +134,30 @@ pub fn train(
 
         if step % train_cfg.log_every == 0 {
             println!(
-                "step {step:>5}/{} | train loss {loss_value:.4} nat | BPC {bpc:.4} | {elapsed:>6.1}s",
+                "step {step:>5}/{} | train {loss_value:.4} nat | BPC {bpc:.4} | lr {lr:.2e} | {elapsed:>6.1}s",
                 train_cfg.n_steps
             );
-            writeln!(csv, "{step},train,{loss_value:.6},{bpc:.6},{elapsed:.3}")?;
+            writeln!(csv, "{step},train,{loss_value:.6},{bpc:.6},{lr:.6e},{elapsed:.3}")?;
         }
 
-        if step % train_cfg.eval_every == 0 {
+        if step % train_cfg.eval_every == 0 || step == train_cfg.n_steps {
             let (val_loss, val_bpc) =
                 eval_model(&model, &mut val_sampler, train_cfg.eval_batches, device)?;
             let elapsed = t0.elapsed().as_secs_f32();
+            let improved = val_bpc < best_val_bpc;
+            let mark = if improved { "*" } else { " " };
             println!(
-                "  -> val   loss {val_loss:.4} nat | BPC {val_bpc:.4} (avg z {} batchy)",
+                "  -> val {val_loss:.4} nat | BPC {val_bpc:.4} {mark} (best={best_val_bpc:.4}, avg z {} batchy)",
                 train_cfg.eval_batches
             );
-            writeln!(csv, "{step},val,{val_loss:.6},{val_bpc:.6},{elapsed:.3}")?;
+            writeln!(
+                csv,
+                "{step},val,{val_loss:.6},{val_bpc:.6},{lr:.6e},{elapsed:.3}"
+            )?;
+            if improved {
+                best_val_bpc = val_bpc;
+                varmap.save(&train_cfg.best_checkpoint_path)?;
+            }
             csv.flush()?;
         }
     }
@@ -123,19 +165,23 @@ pub fn train(
     let (val_loss, val_bpc) =
         eval_model(&model, &mut val_sampler, train_cfg.eval_batches * 2, device)?;
     let elapsed = t0.elapsed().as_secs_f32();
+    let lr_final = lr_at_step(train_cfg.n_steps.saturating_sub(1), &train_cfg);
     println!(
-        "[+] FINAL val loss {val_loss:.4} nat | BPC {val_bpc:.4} (avg z {} batchy)",
+        "[+] FINAL val {val_loss:.4} nat | BPC {val_bpc:.4} (avg z {} batchy) | best={best_val_bpc:.4}",
         train_cfg.eval_batches * 2
     );
     writeln!(
         csv,
-        "{},final,{val_loss:.6},{val_bpc:.6},{elapsed:.3}",
+        "{},final,{val_loss:.6},{val_bpc:.6},{lr_final:.6e},{elapsed:.3}",
         train_cfg.n_steps
     )?;
     csv.flush()?;
 
-    varmap.save(&train_cfg.checkpoint_path)?;
-    println!("[+] zapisano checkpoint: {}", train_cfg.checkpoint_path);
+    varmap.save(&train_cfg.last_checkpoint_path)?;
+    println!(
+        "[+] checkpoint last: {} | best: {}",
+        train_cfg.last_checkpoint_path, train_cfg.best_checkpoint_path
+    );
     println!("[+] log treningu: {}", train_cfg.csv_path);
 
     Ok(())
