@@ -4,15 +4,18 @@ version = "0.1.0"
 edition = "2024"
 authors = ["Tomasz Rosik"]
 description = "Byte-level Transformer for lossless text compression (master's thesis)"
+license = "MIT"
+repository = "https://github.com/Thomas-RC/thesis-compressor"
 
 [dependencies]
 anyhow = "1"
 candle-core = "0.10"
+candle-nn = "0.10"
 rand = "0.10"
 
 [features]
 default = []
-cuda = ["candle-core/cuda"]
+cuda = ["candle-core/cuda", "candle-nn/cuda"]
 
 [profile.release]
 opt-level = 3
