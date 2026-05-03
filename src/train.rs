@@ -68,13 +68,21 @@ fn lr_at_step(step: usize, cfg: &TrainConfig) -> f64 {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct TrainResult {
+    pub final_val_bpc: f32,
+    pub best_val_bpc: f32,
+    pub wall_s: f32,
+    pub n_params: usize,
+}
+
 pub fn train(
     model_cfg: Config,
     train_data: &[u8],
     val_data: &[u8],
     train_cfg: TrainConfig,
     device: &Device,
-) -> Result<()> {
+) -> Result<TrainResult> {
     let varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, device);
     let model = Model::new(model_cfg.clone(), vb)?;
@@ -184,7 +192,12 @@ pub fn train(
     );
     println!("[+] log treningu: {}", train_cfg.csv_path);
 
-    Ok(())
+    Ok(TrainResult {
+        final_val_bpc: val_bpc,
+        best_val_bpc,
+        wall_s: t0.elapsed().as_secs_f32(),
+        n_params,
+    })
 }
 
 fn eval_model(
