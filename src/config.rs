@@ -42,12 +42,26 @@ impl Config {
         }
     }
 
+    pub fn xlarge() -> Self {
+        Self {
+            vocab_size: 256,
+            seq_len: 1024,
+            d_model: 768,
+            n_layers: 8,
+            n_heads: 12,
+            ffn_mult: 4,
+        }
+    }
+
     pub fn from_preset(name: &str) -> anyhow::Result<Self> {
         match name {
             "small" => Ok(Self::small()),
             "medium" => Ok(Self::medium()),
             "large" => Ok(Self::large()),
-            other => anyhow::bail!("nieznany preset: {other} (oczekiwano small|medium|large)"),
+            "xlarge" => Ok(Self::xlarge()),
+            other => anyhow::bail!(
+                "nieznany preset: {other} (oczekiwano small|medium|large|xlarge)"
+            ),
         }
     }
 

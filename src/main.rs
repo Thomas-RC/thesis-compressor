@@ -17,6 +17,7 @@ enum Preset {
     Small,
     Medium,
     Large,
+    Xlarge,
 }
 
 impl Preset {
@@ -25,6 +26,7 @@ impl Preset {
             Preset::Small => "small",
             Preset::Medium => "medium",
             Preset::Large => "large",
+            Preset::Xlarge => "xlarge",
         }
     }
 }
