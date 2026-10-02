@@ -1,8 +1,9 @@
 use anyhow::Result;
-use candle_core::{Device, Tensor};
-use candle_nn::{Embedding, Linear, Module, RmsNorm, VarBuilder};
+use candle_core::{D, Device, Tensor};
+use candle_nn::{Embedding, Linear, Module, VarBuilder};
 
 use crate::config::Config;
+use crate::norm::{RmsNorm, rms_norm};
 
 fn build_causal_mask(seq_len: usize, device: &Device) -> Result<Tensor> {
     let mut data = vec![0f32; seq_len * seq_len];
@@ -21,13 +22,13 @@ fn ffn_hidden(d_model: usize) -> usize {
     raw.div_ceil(32) * 32
 }
 
-struct Rope {
-    cos: Tensor,
-    sin: Tensor,
+pub struct Rope {
+    pub cos: Tensor,
+    pub sin: Tensor,
 }
 
 impl Rope {
-    fn new(max_seq_len: usize, head_dim: usize, device: &Device) -> Result<Self> {
+    pub fn new(max_seq_len: usize, head_dim: usize, device: &Device) -> Result<Self> {
         anyhow::ensure!(head_dim % 2 == 0, "RoPE requires even head_dim, got {head_dim}");
         let theta: f32 = 10_000.0;
         let half = head_dim / 2;
@@ -93,7 +94,8 @@ impl LlamaAttention {
             .unsqueeze(0)?
             .unsqueeze(0)?;
         let scores = scores.broadcast_add(&mask)?;
-        let weights = candle_nn::ops::softmax_last_dim(&scores)?;
+        // softmax_last_dim is a no-backward fused kernel; the composed softmax is differentiable.
+        let weights = candle_nn::ops::softmax(&scores, D::Minus1)?;
 
         let out = weights.matmul(&v)?;
         let out = out
@@ -137,8 +139,8 @@ impl LlamaBlock {
     fn new(cfg: &Config, vb: VarBuilder) -> Result<Self> {
         let attn = LlamaAttention::new(cfg, vb.pp("attn"))?;
         let ffn = LlamaFFN::new(cfg, vb.pp("ffn"))?;
-        let norm1 = candle_nn::rms_norm(cfg.d_model, 1e-5, vb.pp("norm1"))?;
-        let norm2 = candle_nn::rms_norm(cfg.d_model, 1e-5, vb.pp("norm2"))?;
+        let norm1 = rms_norm(cfg.d_model, 1e-5, vb.pp("norm1"))?;
+        let norm2 = rms_norm(cfg.d_model, 1e-5, vb.pp("norm2"))?;
         Ok(Self { attn, ffn, norm1, norm2 })
     }
 
@@ -169,7 +171,7 @@ impl LlamaModel {
         for i in 0..cfg.n_layers {
             blocks.push(LlamaBlock::new(&cfg, vb.pp(&format!("block_{i}")))?);
         }
-        let norm_f = candle_nn::rms_norm(cfg.d_model, 1e-5, vb.pp("norm_f"))?;
+        let norm_f = rms_norm(cfg.d_model, 1e-5, vb.pp("norm_f"))?;
         let head = candle_nn::linear_no_bias(cfg.d_model, cfg.vocab_size, vb.pp("head"))?;
         let rope = Rope::new(cfg.seq_len, cfg.head_dim(), &device)?;
         let mask = build_causal_mask(cfg.seq_len, &device)?;

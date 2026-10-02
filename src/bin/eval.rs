@@ -8,10 +8,16 @@ use thesis_compressor::config::Config;
 use thesis_compressor::data::{Splits, load_enwik8};
 use thesis_compressor::model::Model;
 use thesis_compressor::model_llama::LlamaModel;
+use thesis_compressor::model_rms::Model as RmsModel;
+use thesis_compressor::model_rope::Model as RopeModel;
+use thesis_compressor::model_swiglu::Model as SwigluModel;
 
 enum AnyModel {
     Baseline(Model),
     Llama(LlamaModel),
+    LlamaRms(RmsModel),
+    LlamaRope(RopeModel),
+    LlamaSwiglu(SwigluModel),
 }
 
 impl AnyModel {
@@ -19,6 +25,9 @@ impl AnyModel {
         match self {
             AnyModel::Baseline(m) => m.forward(x),
             AnyModel::Llama(m) => m.forward(x),
+            AnyModel::LlamaRms(m) => m.forward(x),
+            AnyModel::LlamaRope(m) => m.forward(x),
+            AnyModel::LlamaSwiglu(m) => m.forward(x),
         }
     }
 }
@@ -34,6 +43,9 @@ enum DeviceArg {
 enum ArchArg {
     Baseline,
     Llama,
+    LlamaRms,
+    LlamaRope,
+    LlamaSwiglu,
 }
 
 impl From<ArchArg> for Arch {
@@ -41,6 +53,9 @@ impl From<ArchArg> for Arch {
         match a {
             ArchArg::Baseline => Arch::Baseline,
             ArchArg::Llama => Arch::Llama,
+            ArchArg::LlamaRms => Arch::LlamaRms,
+            ArchArg::LlamaRope => Arch::LlamaRope,
+            ArchArg::LlamaSwiglu => Arch::LlamaSwiglu,
         }
     }
 }
@@ -137,6 +152,9 @@ fn main() -> Result<()> {
     let model = match arch {
         Arch::Baseline => AnyModel::Baseline(Model::new(cfg.clone(), vb)?),
         Arch::Llama => AnyModel::Llama(LlamaModel::new(cfg.clone(), vb)?),
+        Arch::LlamaRms => AnyModel::LlamaRms(RmsModel::new(cfg.clone(), vb)?),
+        Arch::LlamaRope => AnyModel::LlamaRope(RopeModel::new(cfg.clone(), vb)?),
+        Arch::LlamaSwiglu => AnyModel::LlamaSwiglu(SwigluModel::new(cfg.clone(), vb)?),
     };
     varmap.load(&args.checkpoint)?;
 

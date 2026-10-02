@@ -53,14 +53,38 @@ impl Config {
         }
     }
 
+    pub fn xxlarge() -> Self {
+        Self {
+            vocab_size: 256,
+            seq_len: 1024,
+            d_model: 1024,
+            n_layers: 8,
+            n_heads: 16,
+            ffn_mult: 4,
+        }
+    }
+
+    pub fn xxxlarge() -> Self {
+        Self {
+            vocab_size: 256,
+            seq_len: 1024,
+            d_model: 1024,
+            n_layers: 16,
+            n_heads: 16,
+            ffn_mult: 4,
+        }
+    }
+
     pub fn from_preset(name: &str) -> anyhow::Result<Self> {
         match name {
             "small" => Ok(Self::small()),
             "medium" => Ok(Self::medium()),
             "large" => Ok(Self::large()),
             "xlarge" => Ok(Self::xlarge()),
+            "xxlarge" => Ok(Self::xxlarge()),
+            "xxxlarge" => Ok(Self::xxxlarge()),
             other => anyhow::bail!(
-                "nieznany preset: {other} (oczekiwano small|medium|large|xlarge)"
+                "nieznany preset: {other} (oczekiwano small|medium|large|xlarge|xxlarge|xxxlarge)"
             ),
         }
     }

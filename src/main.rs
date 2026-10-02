@@ -19,6 +19,8 @@ enum Preset {
     Medium,
     Large,
     Xlarge,
+    Xxlarge,
+    Xxxlarge,
 }
 
 impl Preset {
@@ -28,6 +30,8 @@ impl Preset {
             Preset::Medium => "medium",
             Preset::Large => "large",
             Preset::Xlarge => "xlarge",
+            Preset::Xxlarge => "xxlarge",
+            Preset::Xxxlarge => "xxxlarge",
         }
     }
 }
@@ -36,6 +40,9 @@ impl Preset {
 enum ArchArg {
     Baseline,
     Llama,
+    LlamaRms,
+    LlamaRope,
+    LlamaSwiglu,
 }
 
 impl From<ArchArg> for Arch {
@@ -43,6 +50,9 @@ impl From<ArchArg> for Arch {
         match a {
             ArchArg::Baseline => Arch::Baseline,
             ArchArg::Llama => Arch::Llama,
+            ArchArg::LlamaRms => Arch::LlamaRms,
+            ArchArg::LlamaRope => Arch::LlamaRope,
+            ArchArg::LlamaSwiglu => Arch::LlamaSwiglu,
         }
     }
 }

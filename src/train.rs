@@ -12,10 +12,16 @@ use crate::config::Config;
 use crate::data::BatchSampler;
 use crate::model::Model;
 use crate::model_llama::LlamaModel;
+use crate::model_rms::Model as RmsModel;
+use crate::model_rope::Model as RopeModel;
+use crate::model_swiglu::Model as SwigluModel;
 
 enum AnyModel {
     Baseline(Model),
     Llama(LlamaModel),
+    LlamaRms(RmsModel),
+    LlamaRope(RopeModel),
+    LlamaSwiglu(SwigluModel),
 }
 
 impl AnyModel {
@@ -23,6 +29,9 @@ impl AnyModel {
         match self {
             AnyModel::Baseline(m) => m.forward(x),
             AnyModel::Llama(m) => m.forward(x),
+            AnyModel::LlamaRms(m) => m.forward(x),
+            AnyModel::LlamaRope(m) => m.forward(x),
+            AnyModel::LlamaSwiglu(m) => m.forward(x),
         }
     }
 }
@@ -106,10 +115,15 @@ pub fn train(
     let model = match train_cfg.arch {
         Arch::Baseline => AnyModel::Baseline(Model::new(model_cfg.clone(), vb)?),
         Arch::Llama => AnyModel::Llama(LlamaModel::new(model_cfg.clone(), vb)?),
+        Arch::LlamaRms => AnyModel::LlamaRms(RmsModel::new(model_cfg.clone(), vb)?),
+        Arch::LlamaRope => AnyModel::LlamaRope(RopeModel::new(model_cfg.clone(), vb)?),
+        Arch::LlamaSwiglu => AnyModel::LlamaSwiglu(SwigluModel::new(model_cfg.clone(), vb)?),
     };
     let n_params = match train_cfg.arch {
-        Arch::Baseline => model_cfg.param_count_estimate(),
+        Arch::Baseline | Arch::LlamaRms | Arch::LlamaRope => model_cfg.param_count_estimate(),
         Arch::Llama => LlamaModel::param_count_estimate(&model_cfg),
+        // SwiGLU FFN ma inny rozmiar niż 4*d GELU, podajemy szacunek z model.rs jako approx
+        Arch::LlamaSwiglu => model_cfg.param_count_estimate(),
     };
     println!(
         "[+] arch={} model: ~{n_params} parametrów ({:.2} M), device={device:?}",

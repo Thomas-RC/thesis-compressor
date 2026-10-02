@@ -1,3 +1,9 @@
+// Single-component ablation of Llama: replaces GELU MLP feed-forward with
+// SwiGLU (Llama convention: hidden ≈ 8/3 * d_model rounded to multiple of 32,
+// so the SwiGLU compute is roughly comparable to a 4*d_model GELU MLP).
+// Everything else identical to baseline model.rs (LayerNorm, learned absolute
+// pos embeddings, Linear with biases).
+
 use anyhow::Result;
 use candle_core::{D, Device, Tensor};
 use candle_nn::{Embedding, Linear, Module, VarBuilder};
@@ -13,6 +19,11 @@ fn build_causal_mask(seq_len: usize, device: &Device) -> Result<Tensor> {
         }
     }
     Ok(Tensor::from_vec(data, (seq_len, seq_len), device)?)
+}
+
+fn ffn_hidden(d_model: usize) -> usize {
+    let raw = 8 * d_model / 3;
+    raw.div_ceil(32) * 32
 }
 
 pub struct MultiHeadAttention {
@@ -79,8 +90,8 @@ pub struct FeedForward {
 
 impl FeedForward {
     pub fn new(cfg: &Config, vb: VarBuilder) -> Result<Self> {
-        let hidden = cfg.d_model * cfg.ffn_mult;
-        let fc1 = candle_nn::linear(cfg.d_model, hidden, vb.pp("fc1"))?;
+        let hidden = ffn_hidden(cfg.d_model);
+        let fc1 = candle_nn::linear(cfg.d_model, 2 * hidden, vb.pp("fc1"))?;
         let fc2 = candle_nn::linear(hidden, cfg.d_model, vb.pp("fc2"))?;
         Ok(Self { fc1, fc2 })
     }
@@ -88,9 +99,9 @@ impl FeedForward {
 
 impl Module for FeedForward {
     fn forward(&self, x: &Tensor) -> candle_core::Result<Tensor> {
-        let x = self.fc1.forward(x)?;
-        let x = x.gelu()?;
-        self.fc2.forward(&x)
+        let h = self.fc1.forward(x)?;
+        let h = candle_nn::ops::swiglu(&h)?;
+        self.fc2.forward(&h)
     }
 }
 

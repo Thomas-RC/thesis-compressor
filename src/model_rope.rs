@@ -1,9 +1,14 @@
+// Single-component ablation of Llama: replaces learned absolute positional
+// embeddings with RoPE applied to Q and K inside attention. Everything else
+// identical to baseline model.rs (LayerNorm, GELU MLP, Linear with biases).
+
 use anyhow::Result;
 use candle_core::{D, Device, Tensor};
 use candle_nn::{Embedding, Linear, Module, VarBuilder};
 
 use crate::config::Config;
 use crate::norm::{LayerNorm, layer_norm};
+use crate::model_llama::Rope;
 
 fn build_causal_mask(seq_len: usize, device: &Device) -> Result<Tensor> {
     let mut data = vec![0f32; seq_len * seq_len];
@@ -37,7 +42,7 @@ impl MultiHeadAttention {
         })
     }
 
-    pub fn forward(&self, x: &Tensor, mask: &Tensor) -> Result<Tensor> {
+    pub fn forward(&self, x: &Tensor, rope: &Rope, mask: &Tensor) -> Result<Tensor> {
         let (b, t, _) = x.dims3()?;
         let qkv = self.qkv.forward(x)?;
         let chunks = qkv.chunk(3, 2)?;
@@ -50,6 +55,9 @@ impl MultiHeadAttention {
         let q = to_heads(&chunks[0])?;
         let k = to_heads(&chunks[1])?;
         let v = to_heads(&chunks[2])?;
+
+        let q = candle_nn::rotary_emb::rope_slow(&q, &rope.cos, &rope.sin)?;
+        let k = candle_nn::rotary_emb::rope_slow(&k, &rope.cos, &rope.sin)?;
 
         let scores = q.matmul(&k.transpose(2, 3)?.contiguous()?)?;
         let scores = (scores * self.scale)?;
@@ -110,8 +118,8 @@ impl Block {
         Ok(Self { attn, ffn, ln1, ln2 })
     }
 
-    pub fn forward(&self, x: &Tensor, mask: &Tensor) -> Result<Tensor> {
-        let h = self.attn.forward(&self.ln1.forward(x)?, mask)?;
+    pub fn forward(&self, x: &Tensor, rope: &Rope, mask: &Tensor) -> Result<Tensor> {
+        let h = self.attn.forward(&self.ln1.forward(x)?, rope, mask)?;
         let x = (x + h)?;
         let h = self.ffn.forward(&self.ln2.forward(&x)?)?;
         Ok((&x + h)?)
@@ -120,10 +128,10 @@ impl Block {
 
 pub struct Model {
     tok_emb: Embedding,
-    pos_emb: Embedding,
     blocks: Vec<Block>,
     ln_f: LayerNorm,
     head: Linear,
+    rope: Rope,
     mask: Tensor,
     cfg: Config,
     device: Device,
@@ -133,20 +141,20 @@ impl Model {
     pub fn new(cfg: Config, vb: VarBuilder) -> Result<Self> {
         let device = vb.device().clone();
         let tok_emb = candle_nn::embedding(cfg.vocab_size, cfg.d_model, vb.pp("tok_emb"))?;
-        let pos_emb = candle_nn::embedding(cfg.seq_len, cfg.d_model, vb.pp("pos_emb"))?;
         let mut blocks = Vec::with_capacity(cfg.n_layers);
         for i in 0..cfg.n_layers {
             blocks.push(Block::new(&cfg, vb.pp(&format!("block_{i}")))?);
         }
         let ln_f = layer_norm(cfg.d_model, 1e-5, vb.pp("ln_f"))?;
         let head = candle_nn::linear(cfg.d_model, cfg.vocab_size, vb.pp("head"))?;
+        let rope = Rope::new(cfg.seq_len, cfg.head_dim(), &device)?;
         let mask = build_causal_mask(cfg.seq_len, &device)?;
         Ok(Self {
             tok_emb,
-            pos_emb,
             blocks,
             ln_f,
             head,
+            rope,
             mask,
             cfg,
             device,
@@ -164,12 +172,9 @@ impl Model {
             x.device().same_device(&self.device),
             "input device differs from model device"
         );
-        let positions = Tensor::arange(0u32, t as u32, &self.device)?;
-        let pos = self.pos_emb.forward(&positions)?.unsqueeze(0)?;
-        let tok = self.tok_emb.forward(x)?;
-        let mut h = tok.broadcast_add(&pos)?;
+        let mut h = self.tok_emb.forward(x)?;
         for block in &self.blocks {
-            h = block.forward(&h, &self.mask)?;
+            h = block.forward(&h, &self.rope, &self.mask)?;
         }
         let h = self.ln_f.forward(&h)?;
         Ok(self.head.forward(&h)?)

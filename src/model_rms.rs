@@ -1,9 +1,13 @@
+// Single-component ablation of Llama: replaces LayerNorm with RmsNorm.
+// Everything else identical to baseline model.rs (learned absolute pos
+// embeddings, GELU MLP feed-forward, Linear with biases).
+
 use anyhow::Result;
 use candle_core::{D, Device, Tensor};
 use candle_nn::{Embedding, Linear, Module, VarBuilder};
 
 use crate::config::Config;
-use crate::norm::{LayerNorm, layer_norm};
+use crate::norm::{RmsNorm, rms_norm};
 
 fn build_causal_mask(seq_len: usize, device: &Device) -> Result<Tensor> {
     let mut data = vec![0f32; seq_len * seq_len];
@@ -97,16 +101,16 @@ impl Module for FeedForward {
 pub struct Block {
     attn: MultiHeadAttention,
     ffn: FeedForward,
-    ln1: LayerNorm,
-    ln2: LayerNorm,
+    ln1: RmsNorm,
+    ln2: RmsNorm,
 }
 
 impl Block {
     pub fn new(cfg: &Config, vb: VarBuilder) -> Result<Self> {
         let attn = MultiHeadAttention::new(cfg, vb.pp("attn"))?;
         let ffn = FeedForward::new(cfg, vb.pp("ffn"))?;
-        let ln1 = layer_norm(cfg.d_model, 1e-5, vb.pp("ln1"))?;
-        let ln2 = layer_norm(cfg.d_model, 1e-5, vb.pp("ln2"))?;
+        let ln1 = rms_norm(cfg.d_model, 1e-5, vb.pp("ln1"))?;
+        let ln2 = rms_norm(cfg.d_model, 1e-5, vb.pp("ln2"))?;
         Ok(Self { attn, ffn, ln1, ln2 })
     }
 
@@ -122,7 +126,7 @@ pub struct Model {
     tok_emb: Embedding,
     pos_emb: Embedding,
     blocks: Vec<Block>,
-    ln_f: LayerNorm,
+    ln_f: RmsNorm,
     head: Linear,
     mask: Tensor,
     cfg: Config,
@@ -138,7 +142,7 @@ impl Model {
         for i in 0..cfg.n_layers {
             blocks.push(Block::new(&cfg, vb.pp(&format!("block_{i}")))?);
         }
-        let ln_f = layer_norm(cfg.d_model, 1e-5, vb.pp("ln_f"))?;
+        let ln_f = rms_norm(cfg.d_model, 1e-5, vb.pp("ln_f"))?;
         let head = candle_nn::linear(cfg.d_model, cfg.vocab_size, vb.pp("head"))?;
         let mask = build_causal_mask(cfg.seq_len, &device)?;
         Ok(Self {
