@@ -7,13 +7,14 @@ use candle_core::{DType, Device, Tensor};
 use candle_nn::{VarBuilder, VarMap};
 use thesis_compressor::Arch;
 use thesis_compressor::config::Config;
+use thesis_compressor::init::InitScheme;
 use thesis_compressor::model::Model;
 use thesis_compressor::model_llama::LlamaModel;
 use thesis_compressor::model_rms::Model as RmsModel;
 use thesis_compressor::model_rope::Model as RopeModel;
 use thesis_compressor::model_swiglu::Model as SwigluModel;
 
-fn tiny_config() -> Config {
+fn tiny_config(init: InitScheme) -> Config {
     Config {
         vocab_size: 256,
         seq_len: 16,
@@ -21,12 +22,19 @@ fn tiny_config() -> Config {
         n_layers: 2,
         n_heads: 4,
         ffn_mult: 4,
+        init,
     }
 }
 
 fn assert_all_params_get_gradient(arch: Arch) {
+    for init in [InitScheme::Candle, InitScheme::Gpt2] {
+        assert_all_params_get_gradient_with(arch, init);
+    }
+}
+
+fn assert_all_params_get_gradient_with(arch: Arch, init: InitScheme) {
     let device = Device::Cpu;
-    let cfg = tiny_config();
+    let cfg = tiny_config(init);
     let varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
 
@@ -61,8 +69,9 @@ fn assert_all_params_get_gradient(arch: Arch) {
     missing.sort();
     assert!(
         missing.is_empty(),
-        "arch={}: {} / {} parametrów bez gradientu: {:?}",
+        "arch={} init={}: {} / {} parametrów bez gradientu: {:?}",
         arch.name(),
+        init.name(),
         missing.len(),
         vars.len(),
         missing

@@ -3,10 +3,11 @@
 // identical to baseline model.rs (LayerNorm, GELU MLP, Linear with biases).
 
 use anyhow::Result;
-use candle_core::{D, Device, Tensor};
+use candle_core::{Device, Tensor};
 use candle_nn::{Embedding, Linear, Module, VarBuilder};
 
 use crate::config::Config;
+use crate::init::{embedding, linear};
 use crate::norm::{LayerNorm, layer_norm};
 use crate::model_llama::Rope;
 
@@ -30,8 +31,8 @@ pub struct MultiHeadAttention {
 
 impl MultiHeadAttention {
     pub fn new(cfg: &Config, vb: VarBuilder) -> Result<Self> {
-        let qkv = candle_nn::linear(cfg.d_model, 3 * cfg.d_model, vb.pp("qkv"))?;
-        let out = candle_nn::linear(cfg.d_model, cfg.d_model, vb.pp("out"))?;
+        let qkv = linear(cfg, cfg.d_model, 3 * cfg.d_model, true, false, vb.pp("qkv"))?;
+        let out = linear(cfg, cfg.d_model, cfg.d_model, true, true, vb.pp("out"))?;
         let head_dim = cfg.head_dim();
         Ok(Self {
             qkv,
@@ -59,8 +60,9 @@ impl MultiHeadAttention {
         let q = candle_nn::rotary_emb::rope_slow(&q, &rope.cos, &rope.sin)?;
         let k = candle_nn::rotary_emb::rope_slow(&k, &rope.cos, &rope.sin)?;
 
+        // Scale Q instead of the (B, H, T, T) scores: one fewer large tensor kept for backward.
+        let q = (q * self.scale)?;
         let scores = q.matmul(&k.transpose(2, 3)?.contiguous()?)?;
-        let scores = (scores * self.scale)?;
 
         let mask = mask
             .narrow(0, 0, t)?
@@ -68,8 +70,7 @@ impl MultiHeadAttention {
             .unsqueeze(0)?
             .unsqueeze(0)?;
         let scores = scores.broadcast_add(&mask)?;
-        // softmax_last_dim is a no-backward fused kernel; the composed softmax is differentiable.
-        let weights = candle_nn::ops::softmax(&scores, D::Minus1)?;
+        let weights = crate::softmax::softmax_last_dim(&scores)?;
 
         let out = weights.matmul(&v)?;
         let out = out
@@ -88,8 +89,8 @@ pub struct FeedForward {
 impl FeedForward {
     pub fn new(cfg: &Config, vb: VarBuilder) -> Result<Self> {
         let hidden = cfg.d_model * cfg.ffn_mult;
-        let fc1 = candle_nn::linear(cfg.d_model, hidden, vb.pp("fc1"))?;
-        let fc2 = candle_nn::linear(hidden, cfg.d_model, vb.pp("fc2"))?;
+        let fc1 = linear(cfg, cfg.d_model, hidden, true, false, vb.pp("fc1"))?;
+        let fc2 = linear(cfg, hidden, cfg.d_model, true, true, vb.pp("fc2"))?;
         Ok(Self { fc1, fc2 })
     }
 }
@@ -140,13 +141,13 @@ pub struct Model {
 impl Model {
     pub fn new(cfg: Config, vb: VarBuilder) -> Result<Self> {
         let device = vb.device().clone();
-        let tok_emb = candle_nn::embedding(cfg.vocab_size, cfg.d_model, vb.pp("tok_emb"))?;
+        let tok_emb = embedding(&cfg, cfg.vocab_size, cfg.d_model, vb.pp("tok_emb"))?;
         let mut blocks = Vec::with_capacity(cfg.n_layers);
         for i in 0..cfg.n_layers {
             blocks.push(Block::new(&cfg, vb.pp(&format!("block_{i}")))?);
         }
         let ln_f = layer_norm(cfg.d_model, 1e-5, vb.pp("ln_f"))?;
-        let head = candle_nn::linear(cfg.d_model, cfg.vocab_size, vb.pp("head"))?;
+        let head = linear(&cfg, cfg.d_model, cfg.vocab_size, true, false, vb.pp("head"))?;
         let rope = Rope::new(cfg.seq_len, cfg.head_dim(), &device)?;
         let mask = build_causal_mask(cfg.seq_len, &device)?;
         Ok(Self {

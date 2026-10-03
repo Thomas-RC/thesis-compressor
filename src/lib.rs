@@ -1,11 +1,13 @@
 pub mod config;
 pub mod data;
+pub mod init;
 pub mod model;
 pub mod model_llama;
 pub mod model_rms;
 pub mod model_rope;
 pub mod model_swiglu;
 pub mod norm;
+pub mod softmax;
 pub mod train;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

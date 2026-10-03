@@ -1,3 +1,5 @@
+use crate::init::InitScheme;
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub vocab_size: usize,
@@ -6,6 +8,7 @@ pub struct Config {
     pub n_layers: usize,
     pub n_heads: usize,
     pub ffn_mult: usize,
+    pub init: InitScheme,
 }
 
 impl Config {
@@ -17,6 +20,7 @@ impl Config {
             n_layers: 2,
             n_heads: 4,
             ffn_mult: 4,
+            init: InitScheme::Gpt2,
         }
     }
 
@@ -28,6 +32,7 @@ impl Config {
             n_layers: 4,
             n_heads: 4,
             ffn_mult: 4,
+            init: InitScheme::Gpt2,
         }
     }
 
@@ -39,6 +44,7 @@ impl Config {
             n_layers: 6,
             n_heads: 8,
             ffn_mult: 4,
+            init: InitScheme::Gpt2,
         }
     }
 
@@ -50,6 +56,7 @@ impl Config {
             n_layers: 8,
             n_heads: 12,
             ffn_mult: 4,
+            init: InitScheme::Gpt2,
         }
     }
 
@@ -61,6 +68,7 @@ impl Config {
             n_layers: 8,
             n_heads: 16,
             ffn_mult: 4,
+            init: InitScheme::Gpt2,
         }
     }
 
@@ -72,6 +80,7 @@ impl Config {
             n_layers: 16,
             n_heads: 16,
             ffn_mult: 4,
+            init: InitScheme::Gpt2,
         }
     }
 

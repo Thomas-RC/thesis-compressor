@@ -4,6 +4,7 @@ use clap::{Parser, ValueEnum};
 use thesis_compressor::Arch;
 use thesis_compressor::config::Config;
 use thesis_compressor::data::load_enwik8;
+use thesis_compressor::init::InitScheme;
 use thesis_compressor::train::{TrainConfig, train};
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -57,6 +58,21 @@ impl From<ArchArg> for Arch {
     }
 }
 
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum InitArg {
+    Candle,
+    Gpt2,
+}
+
+impl From<InitArg> for InitScheme {
+    fn from(a: InitArg) -> Self {
+        match a {
+            InitArg::Candle => InitScheme::Candle,
+            InitArg::Gpt2 => InitScheme::Gpt2,
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "thesis-compressor", version, about = "Byte-level Transformer for lossless text compression")]
 struct Args {
@@ -72,6 +88,10 @@ struct Args {
     #[arg(long, value_enum, default_value_t = ArchArg::Baseline)]
     arch: ArchArg,
 
+    /// Parameter init: candle (candle-nn defaults) or gpt2 (N(0,0.02), scaled residual projections)
+    #[arg(long, value_enum, default_value_t = InitArg::Gpt2)]
+    init: InitArg,
+
     /// Compute device (auto = try CUDA, fallback CPU)
     #[arg(long, value_enum, default_value_t = DeviceArg::Auto)]
     device: DeviceArg,
@@ -83,6 +103,10 @@ struct Args {
     /// Mini-batch size
     #[arg(long, default_value_t = 32)]
     batch_size: usize,
+
+    /// Micro-batches accumulated per optimizer step (effective batch = batch_size * grad_accum)
+    #[arg(long, default_value_t = 1)]
+    grad_accum: usize,
 
     /// Peak learning rate (after warmup)
     #[arg(long, default_value_t = 3e-4)]
@@ -103,6 +127,10 @@ struct Args {
     /// AdamW weight decay coefficient
     #[arg(long, default_value_t = 0.01)]
     weight_decay: f64,
+
+    /// Max global gradient L2 norm (0 = no clipping)
+    #[arg(long, default_value_t = 1.0)]
+    grad_clip: f64,
 
     /// Run validation every N steps
     #[arg(long, default_value_t = 50)]
@@ -185,16 +213,19 @@ fn main() -> Result<()> {
     );
 
     let device = pick_device(args.device);
-    let model_cfg = Config::from_preset(args.preset.as_str())?;
+    let mut model_cfg = Config::from_preset(args.preset.as_str())?;
+    model_cfg.init = args.init.into();
     let train_cfg = TrainConfig {
         arch: args.arch.into(),
         n_steps: args.steps,
         batch_size: args.batch_size,
+        grad_accum: args.grad_accum,
         lr_max: args.lr_max,
         lr_min: args.lr_min,
         warmup_steps: args.warmup_steps,
         decay_start_frac: args.decay_start_frac,
         weight_decay: args.weight_decay,
+        grad_clip: args.grad_clip,
         eval_every: args.eval_every,
         eval_batches: args.eval_batches,
         log_every: args.log_every,

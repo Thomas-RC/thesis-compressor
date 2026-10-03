@@ -1,8 +1,9 @@
 use anyhow::Result;
-use candle_core::{D, Device, Tensor};
+use candle_core::{Device, Tensor};
 use candle_nn::{Embedding, Linear, Module, VarBuilder};
 
 use crate::config::Config;
+use crate::init::{embedding, linear};
 use crate::norm::{RmsNorm, rms_norm};
 
 fn build_causal_mask(seq_len: usize, device: &Device) -> Result<Tensor> {
@@ -55,8 +56,8 @@ struct LlamaAttention {
 
 impl LlamaAttention {
     fn new(cfg: &Config, vb: VarBuilder) -> Result<Self> {
-        let qkv = candle_nn::linear_no_bias(cfg.d_model, 3 * cfg.d_model, vb.pp("qkv"))?;
-        let out = candle_nn::linear_no_bias(cfg.d_model, cfg.d_model, vb.pp("out"))?;
+        let qkv = linear(cfg, cfg.d_model, 3 * cfg.d_model, false, false, vb.pp("qkv"))?;
+        let out = linear(cfg, cfg.d_model, cfg.d_model, false, true, vb.pp("out"))?;
         let head_dim = cfg.head_dim();
         Ok(Self {
             qkv,
@@ -85,8 +86,9 @@ impl LlamaAttention {
         let q = candle_nn::rotary_emb::rope_slow(&q, &rope.cos, &rope.sin)?;
         let k = candle_nn::rotary_emb::rope_slow(&k, &rope.cos, &rope.sin)?;
 
+        // Scale Q instead of the (B, H, T, T) scores: one fewer large tensor kept for backward.
+        let q = (q * self.scale)?;
         let scores = q.matmul(&k.transpose(2, 3)?.contiguous()?)?;
-        let scores = (scores * self.scale)?;
 
         let mask = mask
             .narrow(0, 0, t)?
@@ -94,8 +96,7 @@ impl LlamaAttention {
             .unsqueeze(0)?
             .unsqueeze(0)?;
         let scores = scores.broadcast_add(&mask)?;
-        // softmax_last_dim is a no-backward fused kernel; the composed softmax is differentiable.
-        let weights = candle_nn::ops::softmax(&scores, D::Minus1)?;
+        let weights = crate::softmax::softmax_last_dim(&scores)?;
 
         let out = weights.matmul(&v)?;
         let out = out
@@ -114,8 +115,8 @@ struct LlamaFFN {
 impl LlamaFFN {
     fn new(cfg: &Config, vb: VarBuilder) -> Result<Self> {
         let hidden = ffn_hidden(cfg.d_model);
-        let fc1 = candle_nn::linear_no_bias(cfg.d_model, 2 * hidden, vb.pp("fc1"))?;
-        let fc2 = candle_nn::linear_no_bias(hidden, cfg.d_model, vb.pp("fc2"))?;
+        let fc1 = linear(cfg, cfg.d_model, 2 * hidden, false, false, vb.pp("fc1"))?;
+        let fc2 = linear(cfg, hidden, cfg.d_model, false, true, vb.pp("fc2"))?;
         Ok(Self { fc1, fc2 })
     }
 }
@@ -166,13 +167,13 @@ pub struct LlamaModel {
 impl LlamaModel {
     pub fn new(cfg: Config, vb: VarBuilder) -> Result<Self> {
         let device = vb.device().clone();
-        let tok_emb = candle_nn::embedding(cfg.vocab_size, cfg.d_model, vb.pp("tok_emb"))?;
+        let tok_emb = embedding(&cfg, cfg.vocab_size, cfg.d_model, vb.pp("tok_emb"))?;
         let mut blocks = Vec::with_capacity(cfg.n_layers);
         for i in 0..cfg.n_layers {
             blocks.push(LlamaBlock::new(&cfg, vb.pp(&format!("block_{i}")))?);
         }
         let norm_f = rms_norm(cfg.d_model, 1e-5, vb.pp("norm_f"))?;
-        let head = candle_nn::linear_no_bias(cfg.d_model, cfg.vocab_size, vb.pp("head"))?;
+        let head = linear(&cfg, cfg.d_model, cfg.vocab_size, false, false, vb.pp("head"))?;
         let rope = Rope::new(cfg.seq_len, cfg.head_dim(), &device)?;
         let mask = build_causal_mask(cfg.seq_len, &device)?;
         Ok(Self {

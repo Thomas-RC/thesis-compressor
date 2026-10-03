@@ -110,6 +110,7 @@ fn run_one(
         n_layers,
         n_heads: n_heads_for(d_model),
         ffn_mult: 4,
+        init: thesis_compressor::init::InitScheme::Gpt2,
     };
     let tag = format!("d{d_model}_L{n_layers}_s{seq_len}");
     let csv_path = format!("{}/{tag}.csv", args.detail_dir);
@@ -120,11 +121,13 @@ fn run_one(
         arch: thesis_compressor::Arch::Baseline,
         n_steps: args.steps,
         batch_size: args.batch_size,
+        grad_accum: 1,
         lr_max: args.lr_max,
         lr_min: args.lr_min,
         warmup_steps: args.warmup_steps,
         decay_start_frac: args.decay_start_frac,
         weight_decay: 0.01,
+        grad_clip: 1.0,
         eval_every: args.steps / 10,
         eval_batches: 8,
         log_every: args.steps / 10,
