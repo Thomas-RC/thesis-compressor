@@ -1,5 +1,6 @@
 use anyhow::Result;
 use candle_core::{Device, Tensor};
+use candle_nn::kv_cache::KvCache;
 use candle_nn::{Embedding, Linear, Module, VarBuilder};
 
 use crate::config::Config;
@@ -105,6 +106,60 @@ impl LlamaAttention {
             .reshape((b, t, self.n_heads * self.head_dim))?;
         Ok(self.out.forward(&out)?)
     }
+
+    /// Inference-only attention over a KV cache: `x` holds `t` new positions
+    /// starting at `offset`; their keys and values are appended to `cache`.
+    fn forward_cached(
+        &self,
+        x: &Tensor,
+        rope: &Rope,
+        offset: usize,
+        cache: &mut KvCache,
+    ) -> Result<Tensor> {
+        let (b, t, _) = x.dims3()?;
+        let qkv = self.qkv.forward(x)?;
+        let chunks = qkv.chunk(3, 2)?;
+        let to_heads = |t_in: &Tensor| -> Result<Tensor> {
+            Ok(t_in
+                .reshape((b, t, self.n_heads, self.head_dim))?
+                .transpose(1, 2)?
+                .contiguous()?)
+        };
+        let q = to_heads(&chunks[0])?;
+        let k = to_heads(&chunks[1])?;
+        let v = to_heads(&chunks[2])?;
+
+        let cos = rope.cos.narrow(0, offset, t)?;
+        let sin = rope.sin.narrow(0, offset, t)?;
+        let q = candle_nn::rotary_emb::rope_slow(&q, &cos, &sin)?;
+        let k = candle_nn::rotary_emb::rope_slow(&k, &cos, &sin)?;
+        let q = (q * self.scale)?;
+
+        let (k, v) = cache.append(&k.contiguous()?, &v)?;
+        let scores = q.matmul(&k.transpose(2, 3)?.contiguous()?)?;
+        let scores = if t > 1 {
+            // New position i (absolute offset + i) may attend to keys 0..=offset + i.
+            let total = offset + t;
+            let mut data = vec![0f32; t * total];
+            for i in 0..t {
+                for j in (offset + i + 1)..total {
+                    data[i * total + j] = f32::NEG_INFINITY;
+                }
+            }
+            let mask = Tensor::from_vec(data, (1, 1, t, total), x.device())?;
+            scores.broadcast_add(&mask)?
+        } else {
+            scores
+        };
+        let weights = crate::softmax::softmax_last_dim(&scores)?;
+
+        let out = weights.matmul(&v.contiguous()?)?;
+        let out = out
+            .transpose(1, 2)?
+            .contiguous()?
+            .reshape((b, t, self.n_heads * self.head_dim))?;
+        Ok(self.out.forward(&out)?)
+    }
 }
 
 struct LlamaFFN {
@@ -147,6 +202,21 @@ impl LlamaBlock {
 
     fn forward(&self, x: &Tensor, rope: &Rope, mask: &Tensor) -> Result<Tensor> {
         let h = self.attn.forward(&self.norm1.forward(x)?, rope, mask)?;
+        let x = (x + h)?;
+        let h = self.ffn.forward(&self.norm2.forward(&x)?)?;
+        Ok((&x + h)?)
+    }
+
+    fn forward_cached(
+        &self,
+        x: &Tensor,
+        rope: &Rope,
+        offset: usize,
+        cache: &mut KvCache,
+    ) -> Result<Tensor> {
+        let h = self
+            .attn
+            .forward_cached(&self.norm1.forward(x)?, rope, offset, cache)?;
         let x = (x + h)?;
         let h = self.ffn.forward(&self.norm2.forward(&x)?)?;
         Ok((&x + h)?)
@@ -207,6 +277,37 @@ impl LlamaModel {
         Ok(self.head.forward(&h)?)
     }
 
+    /// One empty KV cache per layer, sized for `seq_len` positions.
+    pub fn new_cache(&self) -> Vec<KvCache> {
+        (0..self.cfg.n_layers)
+            .map(|_| KvCache::new(2, self.cfg.seq_len))
+            .collect()
+    }
+
+    /// Inference forward over a KV cache: `x` (B, t) holds the positions
+    /// `offset..offset + t`; returns logits for those positions (B, t, vocab).
+    pub fn forward_cached(
+        &self,
+        x: &Tensor,
+        offset: usize,
+        cache: &mut [KvCache],
+    ) -> Result<Tensor> {
+        let (_b, t) = x.dims2()?;
+        anyhow::ensure!(
+            offset + t <= self.cfg.seq_len,
+            "positions {offset}..{} exceed seq_len {}",
+            offset + t,
+            self.cfg.seq_len
+        );
+        anyhow::ensure!(cache.len() == self.blocks.len(), "one KV cache per layer expected");
+        let mut h = self.tok_emb.forward(x)?;
+        for (block, c) in self.blocks.iter().zip(cache.iter_mut()) {
+            h = block.forward_cached(&h, &self.rope, offset, c)?;
+        }
+        let h = self.norm_f.forward(&h)?;
+        Ok(self.head.forward(&h)?)
+    }
+
     pub fn config(&self) -> &Config {
         &self.cfg
     }
@@ -225,5 +326,56 @@ impl LlamaModel {
         let head = cfg.d_model * cfg.vocab_size;
         let norm_f = cfg.d_model;
         tok + cfg.n_layers * per_block + head + norm_f
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::init::InitScheme;
+    use candle_core::DType;
+    use candle_nn::VarMap;
+
+    #[test]
+    fn cached_forward_matches_full_forward() {
+        let device = Device::Cpu;
+        let cfg = Config {
+            vocab_size: 256,
+            seq_len: 16,
+            d_model: 32,
+            n_layers: 2,
+            n_heads: 4,
+            ffn_mult: 4,
+            init: InitScheme::Gpt2,
+        };
+        let varmap = VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+        let model = LlamaModel::new(cfg.clone(), vb).unwrap();
+        let tokens: Vec<u32> = (0..2 * 16u32).map(|i| (i * 53 + 7) % 256).collect();
+        let x = Tensor::from_vec(tokens, (2, 16), &device).unwrap();
+        let full = model.forward(&x).unwrap();
+
+        // Twice, to check that a reset cache behaves like a fresh one.
+        let mut cache = model.new_cache();
+        for _ in 0..2 {
+            cache.iter_mut().for_each(|c| c.reset());
+            let prefill = 6;
+            let mut parts = vec![model.forward_cached(&x.narrow(1, 0, prefill).unwrap(), 0, &mut cache).unwrap()];
+            for pos in prefill..16 {
+                parts.push(model.forward_cached(&x.narrow(1, pos, 1).unwrap(), pos, &mut cache).unwrap());
+            }
+            let cached = Tensor::cat(&parts, 1).unwrap();
+            let diff: f32 = (&cached - &full)
+                .unwrap()
+                .abs()
+                .unwrap()
+                .flatten_all()
+                .unwrap()
+                .max(0)
+                .unwrap()
+                .to_scalar()
+                .unwrap();
+            assert!(diff < 1e-4, "cached logits differ from full forward by {diff}");
+        }
     }
 }

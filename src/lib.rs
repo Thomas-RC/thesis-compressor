@@ -1,3 +1,5 @@
+pub mod coder;
+pub mod compressor;
 pub mod config;
 pub mod data;
 pub mod init;
